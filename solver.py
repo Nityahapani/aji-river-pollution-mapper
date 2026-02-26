@@ -124,36 +124,17 @@ def crank_nicolson_step(C, u, D, dx, dt, C_left_bc, C_right_bc='neumann'):
 # ================================================================
 # REACTION HALF-STEP (for Strang splitting)
 # ================================================================
-def reaction_half_step(C_w, C_s, C_h, q, dt_half, params,
-                       env, tau_b):
+def reaction_half_step(C_w, C_s, C_h, q, dt_half, params, env, tau_b):
     """
-    Apply reactions for dt_half seconds using implicit Euler.
-
-    Updates C_w, C_s, C_h, and sorbed q in-place.
-
-    Parameters
-    ----------
-    C_w     : water-column dissolved concentration [mg/L]
-    C_s     : sediment concentration [mg/L equiv]
-    C_h     : hyporheic concentration [mg/L]
-    q       : sorbed phase concentration [mg/kg]
-    dt_half : half time-step [s]
-    params  : KineticParams
-    env     : environment dict with current conditions
-    tau_b   : bed shear stress [Pa]
-
-    Returns
-    -------
-    C_w, C_s, C_h, q  (updated arrays)
+    Apply reactions for dt_half seconds.
+    Uses implicit Euler for numerical stability on stiff decay terms.
     """
-    dt_day = dt_half / DAY  # convert to days
+    dt_day = dt_half / DAY
 
     # --- Water column reactions ---
     R_w = total_reaction_rate(C_w, C_s, params, env, tau_b)
-    # Implicit Euler for stability:  C_new = C_old / (1 - dt · k_eff)
-    # For first-order-like terms, k_eff ≈ R/C (effective first-order rate)
     safe_C = np.where(C_w > 1e-15, C_w, 1e-15)
-    k_eff = -R_w / safe_C  # positive when R is negative (decay)
+    k_eff = -R_w / safe_C
     k_eff = np.maximum(k_eff, 0.0)
     C_w_new = C_w / (1.0 + k_eff * dt_day)
     C_w_new = np.maximum(C_w_new, 0.0)
@@ -165,22 +146,21 @@ def reaction_half_step(C_w, C_s, C_h, q, dt_half, params,
     C_w_new = np.maximum(C_w_new + dC_sorp * dt_day, 0.0)
     q_new = np.maximum(q + dq * dt_day, 0.0)
 
-    # --- Sediment reactions (simple first-order decay) ---
-    k_sed = params.k_bio_max * 0.3  # reduced rate in sediment
+    # --- Sediment reactions (reduced biodeg in sediment) ---
+    k_sed = params.k_bio_max * 0.3
     C_s_new = C_s / (1.0 + k_sed * dt_day)
 
-    # --- Hyporheic reactions ---
-    C_h_new = update_hyporheic(
-        C_h, C_w_new, params_sed_alpha_hyp(env),
-        env.get('k_bio_hyp', 0.05), params.theta_bio,
-        env['T'], dt_day)
+    # --- Hyporheic update ---
+    alpha_hyp = env.get('alpha_hyp', 5e-6)
+    k_bio_hyp = env.get('k_bio_hyp', 0.05)
+    theta = params.theta_bio
+    T = env['T']
+
+    exchange = alpha_hyp * DAY * (C_w_new - C_h)
+    decay = -k_bio_hyp * theta ** (T - 20.0) * C_h
+    C_h_new = np.maximum(C_h + (exchange + decay) * dt_day, 0.0)
 
     return C_w_new, C_s_new, C_h_new, q_new
-
-
-def params_sed_alpha_hyp(env):
-    """Extract hyporheic exchange coefficient from environment."""
-    return env.get('alpha_hyp', 5e-6)
 
 
 # ================================================================
